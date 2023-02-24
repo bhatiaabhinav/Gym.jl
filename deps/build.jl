@@ -1,4 +1,3 @@
-using Conda
 using PyCall
 
 # swig, gcc, g++ need to be installed
