@@ -7,7 +7,7 @@ function __init__()
 end
 
 using MDPs
-import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, visualize
+import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, truncated, visualize
 using Random
 using Colors
 
@@ -106,6 +106,8 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
 end
 
 @inline in_absorbing_state(env::GymEnv) = env.terminated
+
+@inline truncated(env::GymEnv) = env.truncated
 
 function visualize(env::GymEnv{S, A}, s::S, args...; kwargs...) where {S, A}
     if S == Array{UInt8, 3}
