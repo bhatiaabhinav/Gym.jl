@@ -40,7 +40,7 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     terminated::Bool
 
     function GymEnv(gym_env_name, args...; kwargs...)
-        kwargs_dict = Dict(kwargs...)
+        kwargs_dict = Dict{Symbol, Any}(kwargs...)
         kwargs_dict[:render_mode] = "rgb_array"
         pyenv = gym.make(gym_env_name, args...; kwargs_dict...)
         𝕊 = translate_space(pyenv.observation_space)
