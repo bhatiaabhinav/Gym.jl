@@ -1,32 +1,46 @@
 module Gym
 
-using PyCall
-const gym = PyNULL()
+using PythonCall
+using CondaPkg
+
+const gym = PythonCall.pynew()
 function __init__()
-    copy!(gym, pyimport("gym"))
+    PythonCall.pycopy!(gym, PythonCall.pyimport("gymnasium"))
 end
+IMPORTED_ROMS = false
+function ale_import_roms()
+    global IMPORTED_ROMS
+    if !IMPORTED_ROMS
+        bin_dir = "$(CondaPkg.envdir())/bin"
+        romspath = joinpath(@__DIR__, "..", "deps", "roms")
+        run(`$bin_dir/ale-import-roms $romspath/`)
+        IMPORTED_ROMS = true
+    else
+        println("Already imported roms")
+    end
+end
+
 
 using MDPs
 import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, truncated, visualize
 using Random
 using Colors
 
-export GymEnv, gym
-
 function translate_space(pyspace)
     if pyisinstance(pyspace, gym.spaces.Box)
-        lows = pyspace.low
-        highs = pyspace.high
+        lows = @pyconvert Array pyspace.low
+        highs = @pyconvert Array pyspace.high
         T = lows |> eltype
         N = ndims(lows)
         return TensorSpace{T, N}(lows, highs)
     elseif pyisinstance(pyspace, gym.spaces.Discrete)
-        n = pyspace.n
+        n = @pyconvert Int pyspace.n
         return IntegerSpace(n)
     else
         error("$pyspace space not supported yet.")
     end
 end
+
 
 mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     const pyenv
@@ -46,11 +60,11 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
         𝕊 = translate_space(pyenv.observation_space)
         𝔸 = translate_space(pyenv.action_space)
         S, A = eltype(𝕊), eltype(𝔸)
-        max_episode_steps = py"""hasattr($pyenv, "spec")""" && py"""hasattr($pyenv.spec, "max_episode_steps")""" && !isnothing(pyenv.spec.max_episode_steps) ? pyenv.spec.max_episode_steps : Inf
-        if max_episode_steps < Inf
-            @info "This is a finite horizon problem with max_episode_steps = $max_episode_steps. Gym will not step the environment after these many steps. Ensure that you set the horizon less than or equal to this when interacting with the environment."
-        end
-        state = S == Int ? 1 : ((py"""not hasattr($pyenv, "state")""" || isnothing(pyenv.state)) ? zero(𝕊.lows) : S(pyenv.state))
+        max_episode_steps = pyhasattr(pyenv, "spec") && pyhasattr(pyenv.spec, "max_episode_steps") && !pyis(pyenv.spec.max_episode_steps, pybuiltins.None) ? pyconvert(Int, pyenv.spec.max_episode_steps) : Inf
+        # if max_episode_steps < Inf
+        #     @info "This is a finite horizon problem with max_episode_steps = $max_episode_steps. Gym will not step the environment after these many steps. Ensure that you set the horizon less than or equal to this when interacting with the environment."
+        # end
+        state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
         action = A == Int ? 1 : zero(𝔸.lows)
         
         return new{S, A}(pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false)
@@ -59,17 +73,12 @@ end
 
 @inline state_space(env::GymEnv) = env.𝕊
 @inline action_space(env::GymEnv) = env.𝔸
-# @inline action_meaning
 
 function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
     seed = rand(rng, 1:typemax(Int))
     obs, info = env.pyenv.reset(seed=seed)
-    @assert isa(obs, S)
-    # if S == Int
-        env.state = obs
-    # else
-    #     copy!(env.state, obs)
-    # end
+    obs = pyconvert(S, obs)
+    env.state = obs
     env.action = A == Int ? 1 : zero(env.𝔸.lows)
     env.reward = 0
     env.truncated = false
@@ -78,12 +87,8 @@ function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing 
 end
 
 function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
-    @assert a ∈ action_space(env)
-    if A == Int
-        env.action = a
-    else
-        copy!(env.action, a)
-    end
+    @assert a ∈ action_space(env) "The action $a is not in the action space $(action_space(env))"
+    env.action = a
     if in_absorbing_state(env)
         @warn "The environment is in an absorbing state. This `step!` will not do anything. Please call `reset!`."
         env.reward = 0.0
@@ -93,23 +98,18 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
     else
         if A == Int; a -=1; end
         obs, r, terminated, truncated, info = env.pyenv.step(a)
-        # if S == Int
-            env.state = obs
-        # else
-            # copy!(env.state, obs)
-        # end
-        env.reward = r
-        env.terminated = terminated
-        env.truncated = truncated
+        env.state = pyconvert(S, obs)
+        env.reward = pyconvert(Float64, r)
+        env.terminated = pyconvert(Bool, terminated)
+        env.truncated = pyconvert(Bool, truncated)
     end
     nothing
 end
 
 @inline in_absorbing_state(env::GymEnv) = env.terminated
-
 @inline truncated(env::GymEnv) = env.truncated
 
-function visualize(env::GymEnv{S, A}, s::S, args...; kwargs...) where {S, A}
+function visualize(env::GymEnv{S, A}, s::S; kwargs...) where {S, A}
     if S == Array{UInt8, 3}
         arr = reinterpret(Colors.N0f8, permutedims(state(env), (3, 1, 2)))
         img = reinterpret(reshape, RGB{eltype(arr)}, arr)
@@ -117,11 +117,13 @@ function visualize(env::GymEnv{S, A}, s::S, args...; kwargs...) where {S, A}
     end
 end
 
-function visualize(env::GymEnv, args...; kwargs...)
-    rgb_array = env.pyenv.render()
+function visualize(env::GymEnv; kwargs...)
+    rgb_array = pyconvert(Array, env.pyenv.render())
     arr = reinterpret(Colors.N0f8, permutedims(rgb_array, (3, 1, 2)))
     img = reinterpret(reshape, RGB{eltype(arr)}, arr)
     return img
 end
 
-end # module Gym
+export ale_import_roms, gym, GymEnv
+
+end # module PGym
