@@ -8,6 +8,12 @@ function __init__()
     PythonCall.pycopy!(gym, PythonCall.pyimport("gymnasium"))
 end
 IMPORTED_ROMS = false
+
+"""
+    ale_import_roms()
+
+Import the roms for the Arcade Learning Environment. This is only necessary once.
+"""
 function ale_import_roms()
     global IMPORTED_ROMS
     if !IMPORTED_ROMS
@@ -53,22 +59,39 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     truncated::Bool
     terminated::Bool
 
-    function GymEnv(gym_env_name, args...; kwargs...)
-        kwargs_dict = Dict{Symbol, Any}(kwargs...)
-        kwargs_dict[:render_mode] = "rgb_array"
-        pyenv = gym.make(gym_env_name, args...; kwargs_dict...)
+    function GymEnv(pyenv)
+        @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
         𝕊 = translate_space(pyenv.observation_space)
         𝔸 = translate_space(pyenv.action_space)
         S, A = eltype(𝕊), eltype(𝔸)
         max_episode_steps = pyhasattr(pyenv, "spec") && pyhasattr(pyenv.spec, "max_episode_steps") && !pyis(pyenv.spec.max_episode_steps, pybuiltins.None) ? pyconvert(Int, pyenv.spec.max_episode_steps) : Inf
-        # if max_episode_steps < Inf
-        #     @info "This is a finite horizon problem with max_episode_steps = $max_episode_steps. Gym will not step the environment after these many steps. Ensure that you set the horizon less than or equal to this when interacting with the environment."
-        # end
         state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
         action = A == Int ? 1 : zero(𝔸.lows)
         
         return new{S, A}(pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false)
     end
+end
+
+"""
+    GymEnv(gym_env_name::String, args...; kwargs...)
+
+Create a Gym environment with the given name. The arguments `args` and `kwargs` are passed to the `gym.make` function. The `render_mode` keyword argument is set to `"rgb_array"` by default.
+"""
+function GymEnv(gym_env_name::String, args...; kwargs...)
+    kwargs_dict = Dict{Symbol, Any}(kwargs...)
+    kwargs_dict[:render_mode] = "rgb_array"
+    pyenv = gym.make(gym_env_name, args...; kwargs_dict...)
+    return GymEnv(pyenv)
+end
+
+"""
+    gym_wrap(env::GymEnv, pywrapper_class, args...; kwargs...)
+
+Wrap a Gym environment with a Python wrapper class from `gym.wrappers`. The arguments `args` and `kwargs` are passed to the `pywrapper_class` constructor.
+"""
+function gym_wrap(env::GymEnv, pywrapper_class, args...; kwargs...)
+    pyenv = pywrapper_class(env.pyenv, args...; kwargs...)
+    return GymEnv(pyenv)
 end
 
 @inline state_space(env::GymEnv) = env.𝕊
@@ -78,7 +101,11 @@ function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing 
     seed = rand(rng, 1:typemax(Int))
     obs, info = env.pyenv.reset(seed=seed)
     obs = pyconvert(S, obs)
-    env.state = obs
+    if S isa AbstractArray
+        copy!(env.state, obs)
+    else
+        env.state = obs
+    end
     env.action = A == Int ? 1 : zero(env.𝔸.lows)
     env.reward = 0
     env.truncated = false
@@ -98,7 +125,12 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
     else
         if A == Int; a -=1; end
         obs, r, terminated, truncated, info = env.pyenv.step(a)
-        env.state = pyconvert(S, obs)
+        obs = pyconvert(S, obs)
+        if S isa AbstractArray
+            copy!(env.state, obs)
+        else
+            env.state = obs
+        end
         env.reward = pyconvert(Float64, r)
         env.terminated = pyconvert(Bool, terminated)
         env.truncated = pyconvert(Bool, truncated)
@@ -124,6 +156,6 @@ function visualize(env::GymEnv; kwargs...)
     return img
 end
 
-export ale_import_roms, gym, GymEnv
+export ale_import_roms, gym, GymEnv, gym_wrap
 
 end # module PGym
