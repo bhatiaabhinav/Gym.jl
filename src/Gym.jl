@@ -28,7 +28,7 @@ end
 
 
 using MDPs
-import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, truncated, visualize
+import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, truncated, visualize, info
 using Random
 using Colors
 
@@ -58,9 +58,13 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     reward::Float64
     truncated::Bool
     terminated::Bool
+    info::Dict{Symbol, Any}
 
     function GymEnv(pyenv)
-        @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
+        if !pyis(pyenv.render_mode, pybuiltins.None)
+            @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
+            # println("Render mode is correctly set to rgb_array")
+        end
         𝕊 = translate_space(pyenv.observation_space)
         𝔸 = translate_space(pyenv.action_space)
         S, A = eltype(𝕊), eltype(𝔸)
@@ -68,7 +72,7 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
         state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
         action = A == Int ? 1 : zero(𝔸.lows)
         
-        return new{S, A}(pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false)
+        return new{S, A}(pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false, Dict{String, Any}())
     end
 end
 
@@ -110,6 +114,7 @@ function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing 
     env.reward = 0
     env.truncated = false
     env.terminated = false
+    env.info = pyconvert(Dict{Symbol, Any}, info)
     nothing
 end
 
@@ -134,12 +139,14 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
         env.reward = pyconvert(Float64, r)
         env.terminated = pyconvert(Bool, terminated)
         env.truncated = pyconvert(Bool, truncated)
+        env.info = pyconvert(Dict{Symbol, Any}, info)
     end
     nothing
 end
 
 @inline in_absorbing_state(env::GymEnv) = env.terminated
 @inline truncated(env::GymEnv) = env.truncated
+@inline info(env::GymEnv) = env.info
 
 function visualize(env::GymEnv{S, A}, s::S; kwargs...) where {S, A}
     if S == Array{UInt8, 3}
