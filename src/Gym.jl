@@ -4,8 +4,10 @@ using PythonCall
 using CondaPkg
 
 const gym = PythonCall.pynew()
+const np = PythonCall.pynew()
 function __init__()
     PythonCall.pycopy!(gym, PythonCall.pyimport("gymnasium"))
+    PythonCall.pycopy!(np, PythonCall.pyimport("numpy"))
 end
 IMPORTED_ROMS = false
 
@@ -163,6 +165,154 @@ function visualize(env::GymEnv; kwargs...)
     return img
 end
 
-export ale_import_roms, gym, GymEnv, gym_wrap
+export ale_import_roms, gym, GymEnv, gym_wrap, GymVecEnv
+
+
+
+
+mutable struct GymVecEnv{S, A} <: AbstractVecEnv{S, A}
+    const pyenv
+    const nenvs::Int
+    const 𝕊
+    const 𝔸
+    const max_episode_steps::Real
+    state
+    action
+    reward::Vector{Float64}
+    truncated::Vector{Bool}
+    terminated::Vector{Bool}
+    info
+
+    function GymVecEnv(pyvecenv)
+        # if !pyis(pyenv.render_mode, pybuiltins.None)
+        #     @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
+        #     # println("Render mode is correctly set to rgb_array")
+        # end
+        𝕊 = translate_space(pyvecenv.single_observation_space)
+        𝔸 = translate_space(pyvecenv.single_action_space)
+        S, A = eltype(𝕊), eltype(𝔸)
+        nenvs = @pyconvert Int pyvecenv.num_envs
+        # max_episode_steps = pyhasattr(pyenv, "spec") && pyhasattr(pyenv.spec, "max_episode_steps") && !pyis(pyenv.spec.max_episode_steps, pybuiltins.None) ? pyconvert(Int, pyenv.spec.max_episode_steps) : Inf
+        if S == Int
+            state = ones(Int, nenvs)
+        else
+            Tₛ = eltype(S)
+            # N = ndims(S)
+            state = zeros(Tₛ, size(𝕊)[1:end-1]..., nenvs)
+        end
+        if A == Int
+            action = ones(Int, nenvs)
+        else
+            Tₐ = eltype(A)
+            # N = ndims(A)
+            action = zeros(Tₐ, size(𝔸)[1:end-1]..., nenvs)
+        end
+        reward = zeros(Float64, nenvs)
+        truncated = falses(nenvs)
+        terminated = falses(nenvs)
+        
+        return new{S, A}(pyvecenv, nenvs, 𝕊, 𝔸, 100, state, action, reward, truncated, terminated, nothing)
+    end
+end
+
+
+function GymVecEnv(gym_env_name::String, args...; kwargs...)
+    kwargs_dict = Dict{Symbol, Any}(kwargs...)
+    kwargs_dict[:render_mode] = "rgb_array"
+    pyvecenv = gym.vector.make(gym_env_name, args...; kwargs_dict...)
+    return GymVecEnv(pyvecenv)
+end
+
+
+# """
+#     gym_wrap(env::GymEnv, pywrapper_class, args...; kwargs...)
+
+# Wrap a Gym environment with a Python wrapper class from `gym.wrappers`. The arguments `args` and `kwargs` are passed to the `pywrapper_class` constructor.
+# """
+# function gym_wrap(env::GymEnv, pywrapper_class, args...; kwargs...)
+#     pyenv = pywrapper_class(env.pyenv, args...; kwargs...)
+#     return GymEnv(pyenv)
+# end
+
+MDPs.num_envs(env::GymVecEnv) = env.nenvs
+function MDPs.get_envs(env::GymVecEnv)
+    error("Not implemented yet. Possibly, cannot be retrieved.")
+end
+
+@inline state_space(env::GymVecEnv) = env.𝕊
+@inline action_space(env::GymVecEnv) = env.𝔸
+@inline state(env::GymVecEnv) = env.state
+@inline action(env::GymVecEnv) = env.action
+@inline reward(env::GymVecEnv) = env.reward
+
+function reset!(env::GymVecEnv{S, A}, reset_all::Bool=true; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
+    nenvs = env.nenvs
+    if reset_all
+        seed = rand(rng, 1:100000000)
+        # seed = 42
+        # println("calling reset")
+        obs, info = env.pyenv.reset(seed=seed)
+        env.info = pyconvert(Dict{Symbol, Any}, info)
+        env.reward = zeros(Float64, nenvs)
+        if A == Int
+            action = ones(Int, nenvs)
+        else
+            Tₐ = eltype(A)
+            action = zeros(Tₐ, size(env.𝔸)[1:end-1]..., nenvs)
+        end
+    end
+    obs = pyconvert(Array{eltype(S)}, env.pyenv.observations)
+    copy!(env.state, obs')
+    env.truncated = falses(nenvs)
+    env.terminated = falses(nenvs)
+    nothing
+end
+
+function step!(env::GymVecEnv{S, A}, a; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
+    if any(env.terminated) || any(env.truncated)
+        println("any terminated = ", any(env.terminated), "\tany truncated = ", any(env.truncated))
+        error("An environment needs reset. Please call `reset!(vecenv, false)` to reset only the environments that need it.")
+    end
+    copy!(env.action, a)
+    if A == Int
+        a .-= 1
+    else
+        a = a'
+    end
+    obs, r, terminated, truncated, info = env.pyenv.step(np.asarray(a))
+    obs = pyconvert(Array{eltype(S)}, obs)
+    copy!(env.state, obs')
+    copy!(env.reward, pyconvert(Vector{Float64}, r))
+    copy!(env.terminated, pyconvert(Vector{Bool}, terminated))
+    copy!(env.truncated, pyconvert(Vector{Bool}, truncated))
+    env.info = pyconvert(Dict{Symbol, Any}, info)
+    for i in 1:env.nenvs
+        if env.terminated[i] || env.truncated[i]
+            env.state[:, i] = pyconvert(Array, env.info[:final_observation][i])
+        end
+    end
+    nothing
+end
+
+@inline in_absorbing_state(env::GymVecEnv) = env.terminated
+@inline truncated(env::GymVecEnv) = env.truncated
+@inline info(env::GymVecEnv) = env.info
+
+# function visualize(env::GymEnv{S, A}, s::S; kwargs...) where {S, A}
+#     if S == Array{UInt8, 3}
+#         arr = reinterpret(Colors.N0f8, permutedims(state(env), (3, 1, 2)))
+#         img = reinterpret(reshape, RGB{eltype(arr)}, arr)
+#         return img
+#     end
+# end
+
+# function visualize(env::GymEnv; kwargs...)
+#     rgb_array = pyconvert(Array, env.pyenv.render())
+#     arr = reinterpret(Colors.N0f8, permutedims(rgb_array, (3, 1, 2)))
+#     img = reinterpret(reshape, RGB{eltype(arr)}, arr)
+#     return img
+# end
+
+
 
 end # module PGym
