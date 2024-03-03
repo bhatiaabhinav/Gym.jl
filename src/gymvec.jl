@@ -165,6 +165,12 @@ function step!(v::GymVecEnv{S, A}, action; rng::AbstractRNG=Random.GLOBAL_RNG) w
     end
     obs, r, terminated, truncated, info = v.pyenv.step(action)
     v.rewards .= pyconvert(Vector{Float64}, r)
+    if pyisinstance(terminated[0], np.bool_)
+        terminated = pybool.(terminated)
+    end
+    if pyisinstance(truncated[0], np.bool_)
+        truncated = pybool.(truncated)
+    end
     v.terminateds .= pyconvert(Vector{Bool}, terminated)
     v.truncateds .= pyconvert(Vector{Bool}, truncated)
     if any(v.terminateds) || any(v.truncateds)

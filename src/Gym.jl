@@ -139,6 +139,12 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
             env.state = obs
         end
         env.reward = pyconvert(Float64, r)
+        if pyisinstance(terminated, np.bool_)
+            terminated = pybool(terminated)
+        end
+        if pyisinstance(truncated, np.bool_)
+            truncated = pybool(truncated)
+        end
         env.terminated = pyconvert(Bool, terminated)
         env.truncated = pyconvert(Bool, truncated)
         env.info = pyconvert(Dict{Symbol, Any}, info)
@@ -159,7 +165,13 @@ function visualize(env::GymEnv{S, A}, s::S; kwargs...) where {S, A}
 end
 
 function visualize(env::GymEnv; kwargs...)
-    rgb_array = pyconvert(Array, env.pyenv.render())
+    pyarr = env.pyenv.render()
+    if PythonCall.pyisnone(pyarr)
+        @error "The environment is not rendering. Please try setting render_mode='rgb_array' in the gym environment. Trying visualize for the state" maxlog=1
+        rgb_array = state(env)
+    else
+        rgb_array = pyconvert(Array, pyarr)
+    end
     arr = reinterpret(Colors.N0f8, permutedims(rgb_array, (3, 1, 2)))
     img = reinterpret(reshape, RGB{eltype(arr)}, arr)
     return img
