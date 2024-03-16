@@ -158,7 +158,7 @@ function step!(v::GymVecEnv{S, A}, action; rng::AbstractRNG=Random.GLOBAL_RNG) w
     end
 
     if A == Int
-        action .-= 1
+        action = action .- 1
     else
         action = transpose(action) |> copy # since python is row-major
         action = np.asarray(action)
