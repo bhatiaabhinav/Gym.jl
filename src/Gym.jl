@@ -166,7 +166,7 @@ end
 
 function visualize(env::GymEnv; kwargs...)
     pyarr = env.pyenv.render()
-    if PythonCall.pyisnone(pyarr)
+    if PythonCall.pyis(pyarr, PythonCall.pybuiltins.None)
         @error "The environment is not rendering. Please try setting render_mode='rgb_array' in the gym environment. Trying visualize for the state" maxlog=1
         rgb_array = state(env)
     else
