@@ -3,6 +3,7 @@ using MDPs
 export GymVecEnv
 
 mutable struct GymVecEnv{S, A} <: AbstractVecEnv{S, A}
+    const gym
     const pyenv
     const 𝕊
     const 𝔸
@@ -15,9 +16,9 @@ mutable struct GymVecEnv{S, A} <: AbstractVecEnv{S, A}
     truncateds::Vector{Bool}
     terminateds::Vector{Bool}
     infos::Vector{Dict{Symbol, Any}}
-    function GymVecEnv(pyenv)
-        𝕊 = translate_space(pyenv.single_observation_space)
-        𝔸 = translate_space(pyenv.single_action_space)
+    function GymVecEnv(gym, pyenv)
+        𝕊 = translate_space(gym, pyenv.single_observation_space)
+        𝔸 = translate_space(gym, pyenv.single_action_space)
         S, A = eltype(𝕊), eltype(𝔸)
         num_envs = pyconvert(Int, pyenv.num_envs)
         state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
@@ -31,19 +32,19 @@ mutable struct GymVecEnv{S, A} <: AbstractVecEnv{S, A}
         info = Dict{Symbol, Any}()
         infos = fill(info, num_envs)
         rewards = zeros(Float64, num_envs)
-        return new{S, A}(pyenv, 𝕊, 𝔸, num_envs, states, states_after_autoreset, infos_after_autoreset, actions, rewards, truncateds, terminateds, infos)
+        return new{S, A}(gym, pyenv, 𝕊, 𝔸, num_envs, states, states_after_autoreset, infos_after_autoreset, actions, rewards, truncateds, terminateds, infos)
     end
 end
 
 
 """
-    GymVecEnv(gym_env_name::String, num_envs::Int, args...; kwargs...)
+    GymVecEnv(gym, gym_env_name::String, num_envs::Int, args...; kwargs...)
 
 Create a GymVec environment with the given name and the number of parallel environment instances. The arguments `args` and `kwargs` are passed to the `gym.vector.make` function.
 """
-function GymVecEnv(gym_env_name::String, num_envs::Int, args...; kwargs...)
+function GymVecEnv(gym, gym_env_name::String, num_envs::Int, args...; kwargs...)
     pyenv = gym.vector.make(gym_env_name, num_envs, args...; kwargs...)
-    return GymVecEnv(pyenv)
+    return GymVecEnv(gym, pyenv)
 end
 
 function MDPs.get_envs(v::GymVecEnv{S, A}) where {S, A}
@@ -157,6 +158,7 @@ function step!(v::GymVecEnv{S, A}, action; rng::AbstractRNG=Random.GLOBAL_RNG) w
         end
     end
 
+    np = v.gym.core.np
     if A == Int
         action = action .- 1
     else
@@ -165,14 +167,15 @@ function step!(v::GymVecEnv{S, A}, action; rng::AbstractRNG=Random.GLOBAL_RNG) w
     end
     obs, r, terminated, truncated, info = v.pyenv.step(action)
     v.rewards .= pyconvert(Vector{Float64}, r)
-    if pyisinstance(terminated[0], np.bool_)
-        terminated = pybool.(terminated)
-    end
-    if pyisinstance(truncated[0], np.bool_)
-        truncated = pybool.(truncated)
-    end
-    v.terminateds .= pyconvert(Vector{Bool}, terminated)
-    v.truncateds .= pyconvert(Vector{Bool}, truncated)
+    # if pyisinstance(terminated[0], np.bool_)
+    #     println("terminated : ", terminated)
+        # terminated = pybool.(terminated)
+    # end
+    # if pyisinstance(truncated[0], np.bool_)
+        # truncated = pybool.(truncated)
+    # end
+    v.terminateds .= pyconvert(Vector, terminated)
+    v.truncateds .= pyconvert(Vector, truncated)
     if any(v.terminateds) || any(v.truncateds)
         final_info = info["final_info"]
         final_observation = info["final_observation"]

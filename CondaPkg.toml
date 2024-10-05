@@ -1,7 +1,0 @@
-[deps]
-box2d-py = ""
-gymnasium = ""
-imageio = ""
-ale-py = ""
-pygame = ""
-mujoco = "==2.3.3"

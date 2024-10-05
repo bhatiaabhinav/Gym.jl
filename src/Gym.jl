@@ -1,40 +1,12 @@
 module Gym
 
 using PythonCall
-using CondaPkg
-
-const gym = PythonCall.pynew()
-const np = PythonCall.pynew()
-function __init__()
-    PythonCall.pycopy!(gym, PythonCall.pyimport("gymnasium"))
-    PythonCall.pycopy!(np, PythonCall.pyimport("numpy"))
-end
-IMPORTED_ROMS = false
-
-"""
-    ale_import_roms()
-
-Import the roms for the Arcade Learning Environment. This is only necessary once.
-"""
-function ale_import_roms()
-    global IMPORTED_ROMS
-    if !IMPORTED_ROMS
-        bin_dir = "$(CondaPkg.envdir())/bin"
-        romspath = joinpath(@__DIR__, "..", "deps", "roms")
-        run(`$bin_dir/ale-import-roms $romspath/`)
-        IMPORTED_ROMS = true
-    else
-        println("Already imported roms")
-    end
-end
-
-
 using MDPs
 import MDPs: action_space, state_space, action_meaning, action_meanings, state, action, reward, reset!, step!, in_absorbing_state, truncated, visualize, info
 using Random
 using Colors
 
-function translate_space(pyspace)
+function translate_space(gym, pyspace)
     if pyisinstance(pyspace, gym.spaces.Box)
         lows = @pyconvert Array pyspace.low
         highs = @pyconvert Array pyspace.high
@@ -51,6 +23,7 @@ end
 
 
 mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
+    const gym
     const pyenv
     const 𝕊
     const 𝔸
@@ -62,19 +35,19 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     terminated::Bool
     info::Dict{Symbol, Any}
 
-    function GymEnv(pyenv)
+    function GymEnv(gym, pyenv)
         if !pyis(pyenv.render_mode, pybuiltins.None)
             @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
             # println("Render mode is correctly set to rgb_array")
         end
-        𝕊 = translate_space(pyenv.observation_space)
-        𝔸 = translate_space(pyenv.action_space)
+        𝕊 = translate_space(gym, pyenv.observation_space)
+        𝔸 = translate_space(gym, pyenv.action_space)
         S, A = eltype(𝕊), eltype(𝔸)
         max_episode_steps = pyhasattr(pyenv, "spec") && pyhasattr(pyenv.spec, "max_episode_steps") && !pyis(pyenv.spec.max_episode_steps, pybuiltins.None) ? pyconvert(Int, pyenv.spec.max_episode_steps) : Inf
         state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
         action = A == Int ? 1 : zero(𝔸.lows)
         
-        return new{S, A}(pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false, Dict{String, Any}())
+        return new{S, A}(gym, pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false, Dict{String, Any}())
     end
 end
 
@@ -83,11 +56,11 @@ end
 
 Create a Gym environment with the given name. The arguments `args` and `kwargs` are passed to the `gym.make` function. The `render_mode` keyword argument is set to `"rgb_array"` by default.
 """
-function GymEnv(gym_env_name::String, args...; kwargs...)
+function GymEnv(gym, gym_env_name::String, args...; kwargs...)
     kwargs_dict = Dict{Symbol, Any}(kwargs...)
     kwargs_dict[:render_mode] = "rgb_array"
     pyenv = gym.make(gym_env_name, args...; kwargs_dict...)
-    return GymEnv(pyenv)
+    return GymEnv(gym, pyenv)
 end
 
 """
@@ -97,7 +70,7 @@ Wrap a Gym environment with a Python wrapper class from `gym.wrappers`. The argu
 """
 function gym_wrap(env::GymEnv, pywrapper_class, args...; kwargs...)
     pyenv = pywrapper_class(env.pyenv, args...; kwargs...)
-    return GymEnv(pyenv)
+    return GymEnv(env.gym, pyenv)
 end
 
 @inline state_space(env::GymEnv) = env.𝕊
@@ -139,6 +112,7 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
             env.state = obs
         end
         env.reward = pyconvert(Float64, r)
+        np = env.gym.core.np
         if pyisinstance(terminated, np.bool_)
             terminated = pybool(terminated)
         end
@@ -179,6 +153,6 @@ end
 
 include("gymvec.jl")
 
-export ale_import_roms, gym, GymEnv, gym_wrap
+export GymEnv, gym_wrap
 
 end # module PGym
