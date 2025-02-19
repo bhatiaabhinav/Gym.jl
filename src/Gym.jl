@@ -34,9 +34,11 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
     truncated::Bool
     terminated::Bool
     info::Dict{Symbol, Any}
+    nsteps::Int
+    is_old_api::Bool
 
-    function GymEnv(gym, pyenv)
-        if !pyis(pyenv.render_mode, pybuiltins.None)
+    function GymEnv(gym, pyenv; is_old_api=false)
+        if !is_old_api && !pyis(pyenv.render_mode, pybuiltins.None)
             @assert pyconvert(String, pyenv.render_mode) == "rgb_array" "Please set render_mode='rgb_array' in the gym environment."
             # println("Render mode is correctly set to rgb_array")
         end
@@ -47,7 +49,7 @@ mutable struct GymEnv{S, A} <: AbstractMDP{S, A}
         state = S == Int ? 1 : (!pyhasattr(pyenv, "state") || pyis(pyenv.state, pybuiltins.None)) ? zero(𝕊.lows) : pyconvert(S, pyenv.state)
         action = A == Int ? 1 : zero(𝔸.lows)
         
-        return new{S, A}(gym, pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false, Dict{String, Any}())
+        return new{S, A}(gym, pyenv, 𝕊, 𝔸, max_episode_steps, state, action, 0.0, false, false, Dict{String, Any}(), 0, is_old_api)
     end
 end
 
@@ -78,7 +80,11 @@ end
 
 function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
     seed = rand(rng, 1:typemax(Int))
-    obs, info = env.pyenv.reset(seed=seed)
+    if !env.is_old_api
+        obs, info = env.pyenv.reset(seed=seed)
+    else
+        obs = env.pyenv.reset(seed=seed)
+    end
     obs = pyconvert(S, obs)
     if S isa AbstractArray
         copy!(env.state, obs)
@@ -89,12 +95,14 @@ function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing 
     env.reward = 0
     env.truncated = false
     env.terminated = false
-    env.info = pyconvert(Dict{Symbol, Any}, info)
+    env.info = env.is_old_api ? Dict{Symbol, Any}() : pyconvert(Dict{Symbol, Any}, info)
+    env.nsteps = 0
     nothing
 end
 
 function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
     @assert a ∈ action_space(env) "The action $a is not in the action space $(action_space(env))"
+    np = env.gym.spaces.box.np
     env.action = a
     if in_absorbing_state(env)
         @warn "The environment is in an absorbing state. This `step!` will not do anything. Please call `reset!`."
@@ -104,7 +112,35 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
         env.reward = 0.0
     else
         if A == Int; a -=1; end
-        obs, r, terminated, truncated, info = env.pyenv.step(a)
+        env.nsteps += 1
+        if !env.is_old_api
+            obs, r, terminated, truncated, info = env.pyenv.step(a)
+            if pyisinstance(terminated, np.bool_)
+                terminated = pybool(terminated)
+            end
+            if pyisinstance(truncated, np.bool_)
+                truncated = pybool(truncated)
+            end
+            env.terminated = pyconvert(Bool, terminated)
+            env.truncated = pyconvert(Bool, truncated)
+        else
+            _a = np.asarray(a)
+            obs, r, done, info = env.pyenv.step(_a)
+            if pyisinstance(done, np.bool_)
+                done = pybool(done)
+            end
+            done = pyconvert(Bool, done)
+            if env.nsteps >= env.max_episode_steps
+                if !done
+                    @warn "Num steps has reached max_episode_steps but the environment is not `done`. Looks like the environment is not respecting max_episode_steps on its own." maxlog=1
+                end
+                env.truncated = true
+                env.terminated = false  # assume that the last step is not terminal
+            else
+                env.truncated = false
+                env.terminated = done
+            end
+        end
         obs = pyconvert(S, obs)
         if S isa AbstractArray
             copy!(env.state, obs)
@@ -112,15 +148,6 @@ function step!(env::GymEnv{S, A}, a::A; rng::AbstractRNG=Random.GLOBAL_RNG)::Not
             env.state = obs
         end
         env.reward = pyconvert(Float64, r)
-        np = env.gym.core.np
-        if pyisinstance(terminated, np.bool_)
-            terminated = pybool(terminated)
-        end
-        if pyisinstance(truncated, np.bool_)
-            truncated = pybool(truncated)
-        end
-        env.terminated = pyconvert(Bool, terminated)
-        env.truncated = pyconvert(Bool, truncated)
         env.info = pyconvert(Dict{Symbol, Any}, info)
     end
     nothing
