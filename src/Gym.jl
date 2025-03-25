@@ -79,7 +79,7 @@ end
 @inline action_space(env::GymEnv) = env.𝔸
 
 function reset!(env::GymEnv{S, A}; rng::AbstractRNG=Random.GLOBAL_RNG)::Nothing where {S, A}
-    seed = rand(rng, 1:typemax(Int))
+    seed = rand(rng, 0:typemax(Int32))
     if !env.is_old_api
         obs, info = env.pyenv.reset(seed=seed)
     else
