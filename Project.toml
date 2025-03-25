@@ -1,6 +1,6 @@
 name = "Gym"
 uuid = "a6950d0f-05bb-492e-9c8e-cb155f114093"
-authors = ["abhinav "]
+authors = ["Abhinav Bhatia"]
 version = "1.2.1"
 
 [deps]
